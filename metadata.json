@@ -1,0 +1,6 @@
+{
+  "name": "Huerto Scan & Solana Pay",
+  "description": "Una mini-app que te permite escanear las plantas de tu huerto usando Inteligencia Artificial para identificar su nombre científico, origen y usos, e integrarlas a un inventario y mercado comunitario con pasarela de pago en Solana.",
+  "requestFramePermissions": ["camera"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
