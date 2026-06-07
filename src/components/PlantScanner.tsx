@@ -95,7 +95,7 @@ export const PlantScanner: React.FC<PlantScannerProps> = ({ onCropIdentified }) 
     }
   };
 
-  const resizeImageBase64 = (base64Str: string): Promise<string> => {
+  const resizeImageBase64 = (base64Str: string, mimeType: string = "image/jpeg"): Promise<string> => {
     return new Promise((resolve) => {
       const img = new Image();
       img.src = base64Str;
@@ -123,7 +123,7 @@ export const PlantScanner: React.FC<PlantScannerProps> = ({ onCropIdentified }) 
         const ctx = canvas.getContext("2d");
         if (ctx) {
           ctx.drawImage(img, 0, 0, width, height);
-          resolve(canvas.toDataURL("image/jpeg", 0.75));
+          resolve(canvas.toDataURL(mimeType, 0.75));
         } else {
           resolve(base64Str);
         }
@@ -144,10 +144,11 @@ export const PlantScanner: React.FC<PlantScannerProps> = ({ onCropIdentified }) 
     const reader = new FileReader();
     reader.onload = async () => {
       const parentBase64 = reader.result as string;
-      const compressedBase64 = await resizeImageBase64(parentBase64);
+      const targetMimeType = file.type || "image/jpeg";
+      const compressedBase64 = await resizeImageBase64(parentBase64, targetMimeType);
       triggerScanApi({
         base64Image: compressedBase64,
-        mimeType: "image/jpeg",
+        mimeType: targetMimeType,
         isPresetSeed: false,
       });
     };

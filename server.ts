@@ -14,7 +14,7 @@ const __dirname = path.dirname(__filename);
 // Initialize Gemini Client Lazily/Safely
 let aiClient: GoogleGenAI | null = null;
 const getGeminiClient = (): GoogleGenAI | null => {
-  const apiKey = import.meta.env.GEMINI_API_KEY;
+  const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey || apiKey === "MY_GEMINI_API_KEY") {
     console.warn("⚠️ Advertencia: GEMINI_API_KEY no está configurada o usa el marcador por defecto.");
     return null;
@@ -674,18 +674,23 @@ async function startServer() {
     let savedImagePath = "";
     if (base64Image && base64Image.startsWith("data:image")) {
       try {
-        const cleanBase = base64Image.replace(/^data:image\/\w+;base64,/, "");
+        const parts = base64Image.split(";base64,");
+        const cleanBase = parts.length > 1 ? parts[1] : base64Image;
         const buffer = Buffer.from(cleanBase, "base64");
         
         let ext = "jpg";
         if (mimeType) {
-          const parts = mimeType.split("/");
-          if (parts.length > 1) ext = parts[1];
+          const mParts = mimeType.split("/");
+          if (mParts.length > 1) ext = mParts[1];
         } else {
-          const match = base64Image.match(/^data:image\/(\w+);base64,/);
+          const match = base64Image.match(/^data:image\/([a-zA-Z0-9+.-]+);base64,/);
           if (match) ext = match[1];
         }
+        
+        // Normalizar extensiones comunes
+        ext = ext.toLowerCase();
         if (ext === "jpeg") ext = "jpg";
+        else if (ext === "svg+xml") ext = "svg";
         
         const dirPath = path.join(process.cwd(), "src", "Imagenes");
         if (!fs.existsSync(dirPath)) {
