@@ -14,7 +14,7 @@ const __dirname = path.dirname(__filename);
 // Initialize Gemini Client Lazily/Safely
 let aiClient: GoogleGenAI | null = null;
 const getGeminiClient = (): GoogleGenAI | null => {
-  const apiKey = process.env.GEMINI_API_KEY;
+  const apiKey = import.meta.env.GEMINI_API_KEY;
   if (!apiKey || apiKey === "MY_GEMINI_API_KEY") {
     console.warn("⚠️ Advertencia: GEMINI_API_KEY no está configurada o usa el marcador por defecto.");
     return null;
