@@ -5,11 +5,17 @@ import { GoogleGenAI, Type } from "@google/genai";
 import dotenv from "dotenv";
 import { createServer as createViteServer } from "vite";
 import fs from "fs";
+import { createClient } from "@supabase/supabase-js";
 
 dotenv.config();
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+
+// Supabase configuration
+const supabaseUrl = process.env.VITE_SUPABASE_URL || "https://himoehlftyoihvwqecou.supabase.co";
+const supabaseAnonKey = process.env.VITE_SUPABASE_ANON_KEY || "sb_publishable_Wy9UDQ6DCM5iiTs_-fLm0g_qQ38bYis";
+const supabase = createClient(supabaseUrl, supabaseAnonKey);
 
 // Initialize Gemini Client Lazily/Safely
 let aiClient: GoogleGenAI | null = null;
@@ -513,11 +519,16 @@ async function startServer() {
   app.use("/src/imagenes", express.static(path.join(process.cwd(), "src", "imagenes")));
 
   // API Endpoints
-  app.get("/api/crops", (req, res) => {
-    res.json(activeCrops);
+  app.get("/api/crops", async (req, res) => {
+    const { data, error } = await supabase.from('crops').select('*');
+    if (error) {
+      console.error("Supabase /api/crops GET error (asegúrese de crear las tablas):", error.message);
+      return res.json(activeCrops || []);
+    }
+    res.json(data || []);
   });
 
-  app.post("/api/crops", (req, res) => {
+  app.post("/api/crops", async (req, res) => {
     const {
       id, name, scientificName, origin, uses, description, difficulty,
       priceSol, priceUsdc, priceUsdt, stock, isForSale, category, image,
@@ -525,20 +536,14 @@ async function startServer() {
       phRecommended, companionPlants, pestPrevention, detectedElement
     } = req.body;
 
-    const existingId = id || `crop-${Date.now()}`;
-    const existingCrop = activeCrops.find(c => c.id === existingId);
-    if (existingCrop) {
-      return res.json(existingCrop);
-    }
-
     const newCrop = {
-      id: existingId,
+      id: id || `crop-${Date.now()}`,
       name: name || "Cultivo Desconocido",
       scientificName: scientificName || "Incognita",
       origin: origin || "Desconocido",
       uses: uses || "No especificado",
       description: description || "No disponible",
-      difficulty: (difficulty || "Fácil") as "Fácil" | "Moderado" | "Difícil",
+      difficulty: (difficulty || "Fácil"),
       image: image || "",
       priceSol: Number(priceSol) || 0.01,
       priceUsdc: Number(priceUsdc) || 0.5,
@@ -556,76 +561,135 @@ async function startServer() {
       pestPrevention: pestPrevention || "",
       detectedElement: detectedElement || "Plantas"
     };
-    activeCrops.push(newCrop);
-    saveCrops(activeCrops);
-    res.status(201).json(newCrop);
+    
+    // Check if exists
+    const { data: existing } = await supabase.from('crops').select('id').eq('id', newCrop.id).single();
+    
+    if (existing) {
+      return res.json(newCrop); // Usually should return it if it already successfully created
+    }
+
+    const { data, error } = await supabase.from('crops').insert([newCrop]).select();
+    if (error) {
+       console.error("Supabase /api/crops POST error:", error.message);
+       activeCrops.push(newCrop);
+       saveCrops(activeCrops);
+       return res.status(201).json(newCrop);
+    }
+    
+    res.status(201).json(data?.[0] || newCrop);
   });
 
-  app.put("/api/crops/:id", (req, res) => {
+  app.put("/api/crops/:id", async (req, res) => {
     const { id } = req.params;
-    const index = activeCrops.findIndex(c => c.id === id);
-    if (index !== -1) {
-      activeCrops[index] = { ...activeCrops[index], ...req.body };
-      saveCrops(activeCrops);
-      res.json(activeCrops[index]);
+    const { data, error } = await supabase.from('crops').update(req.body).eq('id', id).select();
+    
+    if (error) {
+      console.error("Supabase /api/crops PUT error:", error.message);
+      const index = activeCrops.findIndex(c => c.id === id);
+      if (index !== -1) {
+        activeCrops[index] = { ...activeCrops[index], ...req.body };
+        saveCrops(activeCrops);
+        return res.json(activeCrops[index]);
+      }
+      return res.status(404).json({ error: "Cultivo no encontrado" });
+    }
+    
+    if (data && data.length > 0) {
+      res.json(data[0]);
     } else {
       res.status(404).json({ error: "Cultivo no encontrado" });
     }
   });
 
-  app.delete("/api/crops/:id", (req, res) => {
+  app.delete("/api/crops/:id", async (req, res) => {
     const { id } = req.params;
-    activeCrops = activeCrops.filter(c => c.id !== id);
-    saveCrops(activeCrops);
+    const { error } = await supabase.from('crops').delete().eq('id', id);
+    if (error) {
+      console.error("Supabase /api/crops DELETE error:", error.message);
+      activeCrops = activeCrops.filter(c => c.id !== id);
+      saveCrops(activeCrops);
+      return res.json({ success: true });
+    }
     res.json({ success: true });
   });
 
   // Payment Ledger Endpoints
-  app.get("/api/ledger", (req, res) => {
+  app.get("/api/ledger", async (req, res) => {
+    const { data: ledgerData, error: ledgerError } = await supabase.from('ledger').select('*').order('timestamp', { ascending: false });
+    const { data: volumeData } = await supabase.from('store_metrics').select('totalSalesUsd').eq('id', 'main').single();
+    
+    if (ledgerError) {
+      console.error("Supabase /api/ledger GET error:", ledgerError.message);
+      return res.json({
+        ledger: paymentLedger || [],
+        totalSalesUsd: mockVolumenSalesUsd || 0,
+      });
+    }
+
     res.json({
-      ledger: paymentLedger,
-      totalSalesUsd: mockVolumenSalesUsd,
+      ledger: ledgerData || [],
+      totalSalesUsd: volumeData?.totalSalesUsd || mockVolumenSalesUsd || 0,
     });
   });
 
-  app.post("/api/ledger", (req, res) => {
+  app.post("/api/ledger", async (req, res) => {
     const { cropName, quantity, amount, currency, signature, timestamp, id } = req.body;
     
-    const existingId = id || `tx-${Date.now()}`;
-    const existingLog = paymentLedger.find(log => log.id === existingId);
-    if (existingLog) {
-      return res.json({ log: existingLog, totalSalesUsd: mockVolumenSalesUsd });
-    }
-
     const newLog = {
-      id: existingId,
+      id: id || `tx-${Date.now()}`,
       timestamp: timestamp || new Date().toISOString(),
       cropName: cropName || "Compra de Cultivo",
       quantity: Number(quantity) || 1,
       amount: Number(amount) || 0,
-      currency: (currency || "SOL") as "SOL" | "USDC" | "USDT",
+      currency: currency || "SOL",
       signature: signature || Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15),
-      status: "EXITOSO" as const,
+      status: "EXITOSO"
     };
-    paymentLedger.unshift(newLog);
-    saveLedger(paymentLedger);
+
+    const { error } = await supabase.from('ledger').insert([newLog]);
+    if (error) {
+       console.error("Supabase /api/ledger POST error:", error.message);
+       // Fallback local
+       const existingLog = paymentLedger.find(log => log.id === newLog.id);
+       if (!existingLog) {
+         paymentLedger.unshift(newLog);
+         saveLedger(paymentLedger);
+       }
+    }
 
     // Approximate USD conversion dynamically for sales metric
     let usdValue = newLog.amount;
     if (newLog.currency === "SOL") {
       usdValue = newLog.amount * 150.0; // Assume 1 SOL = $150 USD
     }
+    
+    // Update volume in DB
     mockVolumenSalesUsd = Number((mockVolumenSalesUsd + usdValue).toFixed(2));
-    saveVolume(mockVolumenSalesUsd);
+    
+    if (error) {
+      saveVolume(mockVolumenSalesUsd);
+    } else {
+      await supabase.from('store_metrics').upsert([{ id: 'main', totalSalesUsd: mockVolumenSalesUsd }]);
+    }
 
     res.status(201).json({ log: newLog, totalSalesUsd: mockVolumenSalesUsd });
   });
 
-  app.delete("/api/ledger", (req, res) => {
-    paymentLedger = [];
-    mockVolumenSalesUsd = 0.00;
-    saveLedger(paymentLedger);
-    saveVolume(mockVolumenSalesUsd);
+  app.delete("/api/ledger", async (req, res) => {
+    const { error } = await supabase.from('ledger').delete().neq('id', 'clear_all'); // Clear all rows
+    if (error) {
+       console.error("Supabase /api/ledger DELETE error:", error.message);
+       paymentLedger = [];
+       mockVolumenSalesUsd = 0.00;
+       saveLedger(paymentLedger);
+       saveVolume(mockVolumenSalesUsd);
+       return res.json({ success: true, totalSalesUsd: 0.00 });
+    }
+    
+    await supabase.from('store_metrics').upsert([{ id: 'main', totalSalesUsd: 0 }]);
+    mockVolumenSalesUsd = 0;
+    
     res.json({ success: true, totalSalesUsd: 0.00 });
   });
 
@@ -670,42 +734,9 @@ async function startServer() {
   app.post("/api/scan-plant", async (req, res) => {
     const { base64Image, mimeType, isPresetSeed, presetIndex, targetElement } = req.body;
 
-    // Guardar imagen en src/Imagenes de inmediato si se provee
-    let savedImagePath = "";
+    let finalImage = "";
     if (base64Image && base64Image.startsWith("data:image")) {
-      try {
-        const parts = base64Image.split(";base64,");
-        const cleanBase = parts.length > 1 ? parts[1] : base64Image;
-        const buffer = Buffer.from(cleanBase, "base64");
-        
-        let ext = "jpg";
-        if (mimeType) {
-          const mParts = mimeType.split("/");
-          if (mParts.length > 1) ext = mParts[1];
-        } else {
-          const match = base64Image.match(/^data:image\/([a-zA-Z0-9+.-]+);base64,/);
-          if (match) ext = match[1];
-        }
-        
-        // Normalizar extensiones comunes
-        ext = ext.toLowerCase();
-        if (ext === "jpeg") ext = "jpg";
-        else if (ext === "svg+xml") ext = "svg";
-        
-        const dirPath = path.join(process.cwd(), "src", "Imagenes");
-        if (!fs.existsSync(dirPath)) {
-          fs.mkdirSync(dirPath, { recursive: true });
-        }
-        
-        const fileName = `scan-${Date.now()}.${ext}`;
-        const filePath = path.join(dirPath, fileName);
-        fs.writeFileSync(filePath, buffer);
-        console.log(`📸 Imagen de escaneo guardada exitosamente en: ${filePath}`);
-        
-        savedImagePath = `/src/Imagenes/${fileName}`;
-      } catch (err) {
-        console.error("Error al guardar la imagen en src/Imagenes:", err);
-      }
+      finalImage = base64Image;
     }
 
     // Local quick sandbox preview presets
@@ -738,7 +769,7 @@ async function startServer() {
           success: true,
           data: {
             ...matchedPreset,
-            image: savedImagePath || base64Image || matchedPreset.image,
+            image: finalImage || base64Image || matchedPreset.image,
             detectedElement: targetElement // Preserve the exact title requested by the user
           },
           method: "Análisis Óptico Directo",
@@ -769,7 +800,7 @@ async function startServer() {
       }
 
       const item = { ...selectedPreset };
-      item.image = savedImagePath || getFallbackImageByPlantName(item.name);
+      item.image = finalImage || getFallbackImageByPlantName(item.name);
       return res.json({
         success: true,
         data: item,
@@ -847,7 +878,7 @@ async function startServer() {
       if (response && response.text) {
         const parsedData = JSON.parse(response.text.trim());
         // Preserve user scanned local image path when available, otherwise fall back to Unsplash
-        parsedData.image = savedImagePath || getFallbackImageByPlantName(parsedData.name);
+        parsedData.image = finalImage || getFallbackImageByPlantName(parsedData.name);
         res.json({
           success: true,
           data: parsedData,
@@ -860,8 +891,8 @@ async function startServer() {
       console.log("ℹ️ [Gemini Status] Nota: Las peticiones a la API de Gemini están muy congestionadas en este momento. Se ha activado la ficha botánica pre-integrada del invernadero local de forma automática.");
       const randomIndex = Math.floor(Math.random() * PRESETS_BOTANICAL.length);
       const item = { ...PRESETS_BOTANICAL[randomIndex] };
-      // Always assign savedImagePath if available, then Unsplash fallback, never the huge base64
-      item.image = savedImagePath || getFallbackImageByPlantName(item.name);
+      // Always assign finalImage if available, then Unsplash fallback, never the huge base64
+      item.image = finalImage || getFallbackImageByPlantName(item.name);
       res.json({
         success: true,
         data: item,
