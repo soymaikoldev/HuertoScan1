@@ -13,7 +13,9 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 // Supabase configuration
-const supabaseUrl = process.env.VITE_SUPABASE_URL || "https://himoehlftyoihvwqecou.supabase.co";
+let supabaseUrl = process.env.VITE_SUPABASE_URL || "https://himoehlftyoihvwqecou.supabase.co";
+supabaseUrl = supabaseUrl.replace(/\/rest\/v1\/?$/, "").replace(/\/$/, "");
+
 const supabaseAnonKey = process.env.VITE_SUPABASE_ANON_KEY || "sb_publishable_Wy9UDQ6DCM5iiTs_-fLm0g_qQ38bYis";
 const supabase = createClient(supabaseUrl, supabaseAnonKey);
 
@@ -572,8 +574,10 @@ async function startServer() {
     const { data, error } = await supabase.from('crops').insert([newCrop]).select();
     if (error) {
        console.error("Supabase /api/crops POST error:", error.message);
-       activeCrops.push(newCrop);
-       saveCrops(activeCrops);
+       if (!activeCrops.some(c => c.id === newCrop.id)) {
+           activeCrops.push(newCrop);
+           saveCrops(activeCrops);
+       }
        return res.status(201).json(newCrop);
     }
     
@@ -699,8 +703,7 @@ async function startServer() {
     let lastError: any = null;
 
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-      // Alternate models: Attempt 1 uses gemini-3.5-flash. If busy, try gemini-3.1-flash-lite immediately
-      const model = attempt === 1 ? "gemini-3.5-flash" : "gemini-3.1-flash-lite";
+      const model = attempt === 1 ? "gemini-2.5-flash" : "gemini-2.0-flash";
       console.log(`🤖 [Botanical Analysis] Attempt ${attempt}/${maxAttempts} using model: ${model}`);
       try {
         const response = await client.models.generateContent({
@@ -847,7 +850,7 @@ async function startServer() {
     }
 
     try {
-      const cleanBase64 = base64Image.replace(/^data:image\/\w+;base64,/, "");
+      const cleanBase64 = base64Image.replace(/^data:image\/[a-zA-Z0-9+.-]+;base64,/, "");
       const imgPart = {
         inlineData: {
           mimeType: mimeType || "image/jpeg",
@@ -909,7 +912,8 @@ async function startServer() {
       const response = await generateBotanicalContentWithRetry(client, imgPart, textPart, responseSchema);
 
       if (response && response.text) {
-        const parsedData = JSON.parse(response.text.trim());
+        const cleanedText = response.text.replace(/```json/g, "").replace(/```/g, "").trim();
+        const parsedData = JSON.parse(cleanedText);
         // Preserve user scanned local image path when available, otherwise fall back to Unsplash
         parsedData.image = savedImagePath || getFallbackImageByPlantName(parsedData.name);
         res.json({
@@ -921,6 +925,7 @@ async function startServer() {
         throw new Error("No text response from Gemini");
       }
     } catch (error: any) {
+      console.error("ℹ️ [Gemini Status] Error real en Gemini API o parseo:", error.message, error.stack);
       console.log("ℹ️ [Gemini Status] Nota: Las peticiones a la API de Gemini están muy congestionadas en este momento. Se ha activado la ficha botánica pre-integrada del invernadero local de forma automática.");
       const randomIndex = Math.floor(Math.random() * PRESETS_BOTANICAL.length);
       const item = { ...PRESETS_BOTANICAL[randomIndex] };

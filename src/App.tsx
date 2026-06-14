@@ -76,7 +76,9 @@ export default function App() {
       let localCrops: Crop[] = [];
       if (localStr) {
         try {
-          localCrops = JSON.parse(localStr);
+          const parsed = JSON.parse(localStr);
+          // Deduplicate local crops
+          localCrops = Array.from(new Map(parsed.map((item: any) => [item.id, item])).values()) as Crop[];
         } catch (e) {
           console.error("Error parsing local crops:", e);
         }
