@@ -18,6 +18,7 @@ export const PlantScanner: React.FC<PlantScannerProps> = ({ onCropIdentified }) 
   const [cameraStream, setCameraStream] = useState<MediaStream | null>(null);
   const [cameraErr, setCameraErr] = useState("");
   const [selectedTargetElement, setSelectedTargetElement] = useState<string>("Auto-detectar");
+  const [apiKeyWarning, setApiKeyWarning] = useState("");
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -83,6 +84,11 @@ export const PlantScanner: React.FC<PlantScannerProps> = ({ onCropIdentified }) 
         setScannedResult(cropRes);
         setBackendScanMethod(resultData.method || "Gemini AI Link");
         onCropIdentified(cropRes);
+        if (resultData.warning) {
+          setApiKeyWarning(resultData.warning);
+        } else {
+          setApiKeyWarning("");
+        }
       } else {
         throw new Error(resultData.error || "Falla en escaneo de cultivo");
       }
@@ -353,6 +359,13 @@ export const PlantScanner: React.FC<PlantScannerProps> = ({ onCropIdentified }) 
               <span className="text-slate-500 font-medium">Cotización Devnet:</span>
               <span className="font-bold text-emerald-700 font-mono text-sm">{scannedResult.priceSol} SOL</span>
             </div>
+
+            {apiKeyWarning && (
+              <div className="mt-3 p-3 bg-amber-50 rounded-xl border border-amber-200 text-amber-800 text-xs flex gap-2">
+                <AlertCircle className="shrink-0 w-4 h-4" />
+                <p><strong>Atención:</strong> {apiKeyWarning} Para usar la IA real, dirígete al menú <strong>Settings &gt; Secrets</strong> y configura <code>GEMINI_API_KEY</code>.</p>
+              </div>
+            )}
 
             <button
               id="btn-scan-reset"
