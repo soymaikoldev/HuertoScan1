@@ -13,8 +13,9 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 // Supabase configuration
-const supabaseUrl = process.env.VITE_SUPABASE_URL || "https://himoehlftyoihvwqecou.supabase.co";
-const supabaseAnonKey = process.env.VITE_SUPABASE_ANON_KEY || "sb_publishable_Wy9UDQ6DCM5iiTs_-fLm0g_qQ38bYis";
+const rawSupabaseUrl = process.env.VITE_SUPABASE_URL || "https://himoehlftyoihvwqecou.supabase.co";
+const supabaseUrl = rawSupabaseUrl.replace(/\/rest\/v1\/?$/, "").replace(/['"]+/g, '');
+const supabaseAnonKey = (process.env.VITE_SUPABASE_ANON_KEY || "sb_publishable_Wy9UDQ6DCM5iiTs_-fLm0g_qQ38bYis").replace(/['"]+/g, '');
 const supabase = createClient(supabaseUrl, supabaseAnonKey);
 
 // Initialize Gemini Client Lazily/Safely

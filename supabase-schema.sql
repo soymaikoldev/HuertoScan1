@@ -41,3 +41,8 @@ CREATE TABLE public.store_metrics (
 );
 
 INSERT INTO public.store_metrics (id, "totalSalesUsd") VALUES ('main', 0) ON CONFLICT DO NOTHING;
+
+-- Si tienes problemas con "violates row-level security policy", ejecuta esto:
+ALTER TABLE public.crops DISABLE ROW LEVEL SECURITY;
+ALTER TABLE public.ledger DISABLE ROW LEVEL SECURITY;
+ALTER TABLE public.store_metrics DISABLE ROW LEVEL SECURITY;
