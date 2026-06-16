@@ -1,6 +1,5 @@
 import express from "express";
 import path from "path";
-import { fileURLToPath } from "url";
 import { GoogleGenAI, Type } from "@google/genai";
 import dotenv from "dotenv";
 import { createServer as createViteServer } from "vite";
@@ -8,9 +7,6 @@ import fs from "fs";
 import { createClient } from "@supabase/supabase-js";
 
 dotenv.config();
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
 
 // Supabase configuration
 const rawSupabaseUrl = "https://klaompnbmjufvhjkeeno.supabase.co";
@@ -681,12 +677,11 @@ async function startServer() {
 
   // Gemini Scan Helper with exponential retries and fallback model
   async function generateBotanicalContentWithRetry(client: any, imgPart: any, textPart: any, schema: any) {
-    const maxAttempts = 3;
+    const maxAttempts = 2; // Reduced to avoid vercel timeout
     let lastError: any = null;
 
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-      // Alternate models: Attempt 1 uses gemini-3.5-flash. If busy, try gemini-3.1-flash-lite immediately
-      const model = attempt === 1 ? "gemini-3.5-flash" : "gemini-3.1-flash-lite";
+      const model = attempt === 1 ? "gemini-2.5-flash" : "gemini-1.5-flash";
       console.log(`🤖 [Botanical Analysis] Attempt ${attempt}/${maxAttempts} using model: ${model}`);
       try {
         const response = await client.models.generateContent({
@@ -704,16 +699,15 @@ async function startServer() {
         throw new Error("Respuesta vacia");
       } catch (err: any) {
         lastError = err;
-        console.log(`[Botanical Analysis] Model ${model} returned status: API_BUSY_OR_UNAVAILABLE`);
-        // If we still have attempts, sleep with exponential backoff
+        console.log(`[Botanical Analysis] Model ${model} returned error:`, err?.message || err);
+        // If we still have attempts, sleep short to avoid vercel limits
         if (attempt < maxAttempts) {
-          const sleepMs = attempt * 1500;
-          console.log(`[Botanical Analysis] Sleeping ${sleepMs}ms before next model attempt...`);
-          await new Promise((resolve) => setTimeout(resolve, sleepMs));
+          await new Promise((resolve) => setTimeout(resolve, 500));
         }
       }
     }
-    throw lastError || new Error("Se rebasaron todos los reintentos");
+    console.error("Gemini failed after retries:", lastError);
+    return null;
   }
 
   // Scan Plant Endpoint
