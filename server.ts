@@ -505,9 +505,10 @@ function saveVolume(volume: number) {
   }
 }
 
-let activeCrops: ServerCrop[] = loadCrops();
-let paymentLedger: ServerLedgerLog[] = loadLedger();
-let mockVolumenSalesUsd = loadVolume();
+// Removing local variables
+let activeCrops: ServerCrop[] = [];
+let paymentLedger: ServerLedgerLog[] = [];
+let mockVolumenSalesUsd = 0;
 
 export const app = express();
 
@@ -516,9 +517,8 @@ async function startServer() {
 
   app.use(express.json({ limit: "15mb" }));
   app.use(express.urlencoded({ extended: true, limit: "15mb" }));
-  app.use("/src/Imagenes", express.static(path.join(process.cwd(), "src", "Imagenes")));
-  app.use("/src/imagenes", express.static(path.join(process.cwd(), "src", "imagenes")));
-
+  // Remove express.static for imagenes since we use Supabase now
+  
   // API Endpoints
   app.get("/api/crops", async (req, res) => {
     try {
@@ -527,7 +527,7 @@ async function startServer() {
       res.json(data || []);
     } catch (error: any) {
       console.error("Supabase /api/crops GET error:", error.message || error);
-      res.json(activeCrops);
+      res.status(500).json({ error: "Fallo al conectar con la base de datos (Supabase)." });
     }
   });
 
@@ -579,11 +579,7 @@ async function startServer() {
       res.status(201).json(data?.[0] || newCrop);
     } catch (error: any) {
        console.error("Supabase /api/crops POST error:", JSON.stringify(error, null, 2), error.message);
-       if (!activeCrops.find(c => c.id === newCrop.id)) {
-         activeCrops.push(newCrop);
-         saveCrops(activeCrops);
-       }
-       res.status(201).json(newCrop);
+       res.status(500).json({ error: "Error al guardar el cultivo en base de datos. Verifica RLS y tablas." });
     }
   });
 
@@ -597,18 +593,11 @@ async function startServer() {
       if (data && data.length > 0) {
         res.json(data[0]);
       } else {
-        res.status(404).json({ error: "Cultivo no encontrado" });
+        res.status(404).json({ error: "Cultivo no encontrado en DB" });
       }
     } catch (error: any) {
       console.error("Supabase /api/crops PUT error:", error);
-      const idx = activeCrops.findIndex(c => c.id === id);
-      if (idx !== -1) {
-        activeCrops[idx] = { ...activeCrops[idx], ...req.body };
-        saveCrops(activeCrops);
-        res.json(activeCrops[idx]);
-      } else {
-        res.status(404).json({ error: "Cultivo no encontrado localmente" });
-      }
+      res.status(500).json({ error: "Error actualizando el cultivo en DB." });
     }
   });
 
@@ -620,9 +609,7 @@ async function startServer() {
       res.json({ success: true });
     } catch (error: any) {
       console.error("Supabase /api/crops DELETE error:", error);
-      activeCrops = activeCrops.filter(c => c.id !== id);
-      saveCrops(activeCrops);
-      res.json({ success: true });
+      res.status(500).json({ error: "Error borrando el cultivo en DB." });
     }
   });
 
@@ -636,14 +623,11 @@ async function startServer() {
       
       res.json({
         ledger: ledgerData || [],
-        totalSalesUsd: volumeData?.totalSalesUsd || mockVolumenSalesUsd || 0,
+        totalSalesUsd: volumeData?.totalSalesUsd || 0,
       });
     } catch (error: any) {
       console.error("Supabase /api/ledger GET error:", error);
-      res.json({
-        ledger: paymentLedger,
-        totalSalesUsd: mockVolumenSalesUsd
-      });
+      res.status(500).json({ error: "Error obteniendo el ledger." });
     }
   });
 
@@ -670,24 +654,16 @@ async function startServer() {
       const { error } = await supabase.from('ledger').insert([newLog as any]);
       if (error) throw error;
       
-      const newVol = Number((mockVolumenSalesUsd + usdValue).toFixed(2));
-      mockVolumenSalesUsd = newVol;
+      const { data: volumeData } = await supabase.from('store_metrics').select('totalSalesUsd').eq('id', 'main').single();
+      const currentVol = volumeData?.totalSalesUsd || 0;
+      const newVol = Number((currentVol + usdValue).toFixed(2));
+      
       await supabase.from('store_metrics').upsert([{ id: 'main', totalSalesUsd: newVol }]);
       
       res.status(201).json({ log: newLog, totalSalesUsd: newVol });
     } catch (error: any) {
        console.error("Supabase /api/ledger POST error:", error);
-       
-       if (!paymentLedger.find(l => l.id === newLog.id)) {
-         paymentLedger.unshift(newLog as ServerLedgerLog);
-         saveLedger(paymentLedger);
-         
-         const newVol = Number((mockVolumenSalesUsd + usdValue).toFixed(2));
-         mockVolumenSalesUsd = newVol;
-         saveVolume(newVol);
-       }
-       
-       res.status(201).json({ log: newLog, totalSalesUsd: mockVolumenSalesUsd });
+       res.status(500).json({ error: "Error guardando el pago." });
     }
   });
 
@@ -695,16 +671,11 @@ async function startServer() {
     try {
       await supabase.from('ledger').delete().neq('id', 'clear_all');
       await supabase.from('store_metrics').upsert([{ id: 'main', totalSalesUsd: 0 }]);
-      mockVolumenSalesUsd = 0;
       
       res.json({ success: true, totalSalesUsd: 0.00 });
     } catch (error: any) {
       console.error("Supabase /api/ledger DELETE error:", error);
-      paymentLedger = [];
-      saveLedger(paymentLedger);
-      mockVolumenSalesUsd = 0;
-      saveVolume(0);
-      res.json({ success: true, totalSalesUsd: 0.00 });
+      res.status(500).json({ error: "Error borrando el ledger." });
     }
   });
 
