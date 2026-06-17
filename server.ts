@@ -51,6 +51,25 @@ const uploadScanImageToSupabase = async (
   return data.publicUrl;
 };
 
+const withTimeout = async <T>(
+  promise: Promise<T>,
+  timeoutMs: number,
+  errorMessage: string
+): Promise<T> => {
+  let timeout: NodeJS.Timeout | undefined;
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timeout = setTimeout(() => reject(new Error(errorMessage)), timeoutMs);
+  });
+
+  try {
+    return await Promise.race([promise, timeoutPromise]);
+  } finally {
+    if (timeout) {
+      clearTimeout(timeout);
+    }
+  }
+};
+
 // Initialize Gemini Client Lazily/Safely
 let aiClient: GoogleGenAI | null = null;
 const getGeminiClient = (): GoogleGenAI | null => {
@@ -550,8 +569,23 @@ async function startServer() {
 
   app.use(express.json({ limit: "15mb" }));
   app.use(express.urlencoded({ extended: true, limit: "15mb" }));
-  // Remove express.static for imagenes since we use Supabase now
-  
+  app.use((err: any, _req: any, res: any, next: any) => {
+    if (!err) {
+      return next();
+    }
+
+    console.error("Error procesando el cuerpo de la petición:", err);
+    const status = err.type === "entity.too.large" ? 413 : 400;
+    return res.status(status).json({
+      success: false,
+      error: status === 413
+        ? "La imagen es demasiado grande para procesarla. Intenta con una foto más liviana."
+        : "No se pudo interpretar la petición de análisis.",
+    });
+  });
+  app.use("/src/Imagenes", express.static(path.join(process.cwd(), "src", "Imagenes")));
+  app.use("/src/imagenes", express.static(path.join(process.cwd(), "src", "imagenes")));
+
   // API Endpoints
   app.get("/api/crops", async (req, res) => {
     try {
@@ -749,13 +783,17 @@ async function startServer() {
 
   // Scan Plant Endpoint
   app.post("/api/scan-plant", async (req, res) => {
-    const { base64Image, mimeType, isPresetSeed, presetIndex, targetElement } = req.body;
+    const { base64Image, mimeType, isPresetSeed, presetIndex, targetElement } = req.body || {};
 
     // Guardar imagen en el bucket publico de Supabase Storage si se provee.
     let savedImagePath = "";
     if (base64Image && /^data:image\/[a-zA-Z0-9+.-]+;base64,/.test(base64Image)) {
       try {
-        savedImagePath = await uploadScanImageToSupabase(base64Image, mimeType);
+        savedImagePath = await withTimeout(
+          uploadScanImageToSupabase(base64Image, mimeType),
+          3500,
+          "La subida a Supabase Storage tardó demasiado."
+        );
         console.log(`📸 Imagen de escaneo guardada exitosamente en Supabase Storage (${PLANT_IMAGES_BUCKET}): ${savedImagePath}`);
       } catch (err) {
         console.error(`Error al guardar la imagen en Supabase Storage (${PLANT_IMAGES_BUCKET}):`, err);
@@ -837,7 +875,7 @@ async function startServer() {
     }
 
     try {
-      const cleanBase64 = base64Image.replace(/^data:image\/\w+;base64,/, "");
+      const cleanBase64 = base64Image.replace(/^data:image\/[a-zA-Z0-9+.-]+;base64,/, "");
       const imgPart = {
         inlineData: {
           mimeType: mimeType || "image/jpeg",
@@ -896,7 +934,11 @@ async function startServer() {
         ],
       };
 
-      const response = await generateBotanicalContentWithRetry(client, imgPart, textPart, responseSchema);
+      const response = await withTimeout(
+        generateBotanicalContentWithRetry(client, imgPart, textPart, responseSchema),
+        8000,
+        "El análisis de Gemini tardó demasiado."
+      );
 
       if (response && response.text) {
         const parsedData = JSON.parse(response.text.trim());
