@@ -13,6 +13,7 @@ const rawSupabaseUrl = "https://klaompnbmjufvhjkeeno.supabase.co";
 const supabaseUrl = rawSupabaseUrl.replace(/\/rest\/v1\/?$/, '');
 const supabaseAnonKey = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImtsYW9tcG5ibWp1ZnZoamtlZW5vIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODE1NjY5ODEsImV4cCI6MjA5NzE0Mjk4MX0.udKgeFZLsVzXvSU0oqR0F3_J7EDCA1g7MxF00l8LEEc";
 const supabase = createClient(supabaseUrl, supabaseAnonKey);
+const SUPABASE_QUERY_TIMEOUT_MS = 3000;
 const PLANT_IMAGES_BUCKET = process.env.SUPABASE_STORAGE_BUCKET || "imagenes";
 
 const normalizeImageExtension = (mimeType?: string) => {
@@ -589,7 +590,11 @@ async function startServer() {
   // API Endpoints
   app.get("/api/crops", async (req, res) => {
     try {
-      const { data, error } = await supabase.from('crops').select('*');
+      const { data, error } = await withTimeout(
+        Promise.resolve(supabase.from('crops').select('*')),
+        SUPABASE_QUERY_TIMEOUT_MS,
+        'Timeout consultando cultivos en Supabase.'
+      );
       if (error) throw error;
       res.json(data || []);
     } catch (error: any) {
@@ -634,13 +639,21 @@ async function startServer() {
 
     try {
       // Check if exists
-      const { data: existing } = await supabase.from('crops').select('id').eq('id', newCrop.id).single();
+      const { data: existing } = await withTimeout(
+        Promise.resolve(supabase.from('crops').select('id').eq('id', newCrop.id).maybeSingle()),
+        SUPABASE_QUERY_TIMEOUT_MS,
+        'Timeout verificando cultivo existente en Supabase.'
+      );
       
       if (existing) {
         return res.json(newCrop);
       }
 
-      const { data, error } = await supabase.from('crops').insert([newCrop]).select();
+      const { data, error } = await withTimeout(
+        Promise.resolve(supabase.from('crops').insert([newCrop]).select()),
+        SUPABASE_QUERY_TIMEOUT_MS,
+        'Timeout guardando cultivo en Supabase.'
+      );
       if (error) throw error;
       
       res.status(201).json(data?.[0] || newCrop);
@@ -653,7 +666,11 @@ async function startServer() {
   app.put("/api/crops/:id", async (req, res) => {
     const { id } = req.params;
     try {
-      const { data, error } = await supabase.from('crops').update(req.body).eq('id', id).select();
+      const { data, error } = await withTimeout(
+        Promise.resolve(supabase.from('crops').update(req.body).eq('id', id).select()),
+        SUPABASE_QUERY_TIMEOUT_MS,
+        'Timeout actualizando cultivo en Supabase.'
+      );
       
       if (error) throw error;
       
@@ -671,7 +688,11 @@ async function startServer() {
   app.delete("/api/crops/:id", async (req, res) => {
     const { id } = req.params;
     try {
-      const { error } = await supabase.from('crops').delete().eq('id', id);
+      const { error } = await withTimeout(
+        Promise.resolve(supabase.from('crops').delete().eq('id', id)),
+        SUPABASE_QUERY_TIMEOUT_MS,
+        'Timeout eliminando cultivo en Supabase.'
+      );
       if (error) throw error;
       res.json({ success: true });
     } catch (error: any) {
@@ -683,10 +704,18 @@ async function startServer() {
   // Payment Ledger Endpoints
   app.get("/api/ledger", async (req, res) => {
     try {
-      const { data: ledgerData, error: ledgerError } = await supabase.from('ledger').select('*').order('timestamp', { ascending: false });
+      const { data: ledgerData, error: ledgerError } = await withTimeout(
+        Promise.resolve(supabase.from('ledger').select('*').order('timestamp', { ascending: false })),
+        SUPABASE_QUERY_TIMEOUT_MS,
+        'Timeout consultando ledger en Supabase.'
+      );
       if (ledgerError) throw ledgerError;
       
-      const { data: volumeData } = await supabase.from('store_metrics').select('totalSalesUsd').eq('id', 'main').single();
+      const { data: volumeData } = await withTimeout(
+        Promise.resolve(supabase.from('store_metrics').select('totalSalesUsd').eq('id', 'main').maybeSingle()),
+        SUPABASE_QUERY_TIMEOUT_MS,
+        'Timeout consultando métricas en Supabase.'
+      );
       
       res.json({
         ledger: ledgerData || [],
@@ -718,14 +747,20 @@ async function startServer() {
     }
     
     try {
-      const { error } = await supabase.from('ledger').insert([newLog as any]);
+      const { error } = await withTimeout(
+        Promise.resolve(supabase.from('ledger').insert([newLog as any])),
+        SUPABASE_QUERY_TIMEOUT_MS,
+        'Timeout guardando ledger en Supabase.'
+      );
       if (error) throw error;
       
-      const { data: volumeData } = await supabase.from('store_metrics').select('totalSalesUsd').eq('id', 'main').single();
-      const currentVol = volumeData?.totalSalesUsd || 0;
-      const newVol = Number((currentVol + usdValue).toFixed(2));
-      
-      await supabase.from('store_metrics').upsert([{ id: 'main', totalSalesUsd: newVol }]);
+      const newVol = Number((mockVolumenSalesUsd + usdValue).toFixed(2));
+      mockVolumenSalesUsd = newVol;
+      await withTimeout(
+        Promise.resolve(supabase.from('store_metrics').upsert([{ id: 'main', totalSalesUsd: newVol }])),
+        SUPABASE_QUERY_TIMEOUT_MS,
+        'Timeout actualizando métricas en Supabase.'
+      );
       
       res.status(201).json({ log: newLog, totalSalesUsd: newVol });
     } catch (error: any) {
@@ -736,8 +771,17 @@ async function startServer() {
 
   app.delete("/api/ledger", async (req, res) => {
     try {
-      await supabase.from('ledger').delete().neq('id', 'clear_all');
-      await supabase.from('store_metrics').upsert([{ id: 'main', totalSalesUsd: 0 }]);
+      await withTimeout(
+        Promise.resolve(supabase.from('ledger').delete().neq('id', 'clear_all')),
+        SUPABASE_QUERY_TIMEOUT_MS,
+        'Timeout limpiando ledger en Supabase.'
+      );
+      await withTimeout(
+        Promise.resolve(supabase.from('store_metrics').upsert([{ id: 'main', totalSalesUsd: 0 }])),
+        SUPABASE_QUERY_TIMEOUT_MS,
+        'Timeout reiniciando métricas en Supabase.'
+      );
+      mockVolumenSalesUsd = 0;
       
       res.json({ success: true, totalSalesUsd: 0.00 });
     } catch (error: any) {
