@@ -17,6 +17,62 @@ const rawSupabaseUrl = "https://klaompnbmjufvhjkeeno.supabase.co";
 const supabaseUrl = rawSupabaseUrl.replace(/\/rest\/v1\/?$/, '');
 const supabaseAnonKey = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImtsYW9tcG5ibWp1ZnZoamtlZW5vIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODE1NjY5ODEsImV4cCI6MjA5NzE0Mjk4MX0.udKgeFZLsVzXvSU0oqR0F3_J7EDCA1g7MxF00l8LEEc";
 const supabase = createClient(supabaseUrl, supabaseAnonKey);
+const PLANT_IMAGES_BUCKET = process.env.SUPABASE_STORAGE_BUCKET || "imagenes";
+
+const normalizeImageExtension = (mimeType?: string) => {
+  const rawExt = mimeType?.split("/")?.[1]?.toLowerCase() || "jpg";
+  if (rawExt === "jpeg") return "jpg";
+  if (rawExt === "svg+xml") return "svg";
+  return rawExt.replace(/[^a-z0-9]/g, "") || "jpg";
+};
+
+const uploadScanImageToSupabase = async (
+  base64Image: string,
+  mimeType?: string
+): Promise<string> => {
+  const parts = base64Image.split(";base64,");
+  const cleanBase = parts.length > 1 ? parts[1] : base64Image;
+  const buffer = Buffer.from(cleanBase, "base64");
+  const contentType = mimeType || base64Image.match(/^data:([^;]+);base64,/i)?.[1] || "image/jpeg";
+  const ext = normalizeImageExtension(contentType);
+  const objectPath = `scans/scan-${Date.now()}-${Math.random().toString(36).slice(2, 10)}.${ext}`;
+
+  const { error } = await supabase.storage
+    .from(PLANT_IMAGES_BUCKET)
+    .upload(objectPath, buffer, {
+      contentType,
+      upsert: false,
+    });
+
+  if (error) {
+    throw error;
+  }
+
+  const { data } = supabase.storage
+    .from(PLANT_IMAGES_BUCKET)
+    .getPublicUrl(objectPath);
+
+  return data.publicUrl;
+};
+
+const withTimeout = async <T>(
+  promise: Promise<T>,
+  timeoutMs: number,
+  errorMessage: string
+): Promise<T> => {
+  let timeout: NodeJS.Timeout | undefined;
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timeout = setTimeout(() => reject(new Error(errorMessage)), timeoutMs);
+  });
+
+  try {
+    return await Promise.race([promise, timeoutPromise]);
+  } finally {
+    if (timeout) {
+      clearTimeout(timeout);
+    }
+  }
+};
 
 // Initialize Gemini Client Lazily/Safely
 let aiClient: GoogleGenAI | null = null;
@@ -516,6 +572,20 @@ async function startServer() {
 
   app.use(express.json({ limit: "15mb" }));
   app.use(express.urlencoded({ extended: true, limit: "15mb" }));
+  app.use((err: any, _req: any, res: any, next: any) => {
+    if (!err) {
+      return next();
+    }
+
+    console.error("Error procesando el cuerpo de la petición:", err);
+    const status = err.type === "entity.too.large" ? 413 : 400;
+    return res.status(status).json({
+      success: false,
+      error: status === 413
+        ? "La imagen es demasiado grande para procesarla. Intenta con una foto más liviana."
+        : "No se pudo interpretar la petición de análisis.",
+    });
+  });
   app.use("/src/Imagenes", express.static(path.join(process.cwd(), "src", "Imagenes")));
   app.use("/src/imagenes", express.static(path.join(process.cwd(), "src", "imagenes")));
 
@@ -747,43 +817,20 @@ async function startServer() {
 
   // Scan Plant Endpoint
   app.post("/api/scan-plant", async (req, res) => {
-    const { base64Image, mimeType, isPresetSeed, presetIndex, targetElement } = req.body;
+    const { base64Image, mimeType, isPresetSeed, presetIndex, targetElement } = req.body || {};
 
-    // Guardar imagen en src/Imagenes de inmediato si se provee
+    // Guardar imagen en el bucket publico de Supabase Storage si se provee.
     let savedImagePath = "";
-    if (base64Image && /^data:image\/\w+;base64,/.test(base64Image)) {
+    if (base64Image && /^data:image\/[a-zA-Z0-9+.-]+;base64,/.test(base64Image)) {
       try {
-        const parts = base64Image.split(";base64,");
-        const cleanBase = parts.length > 1 ? parts[1] : base64Image;
-        const buffer = Buffer.from(cleanBase, "base64");
-        
-        let ext = "jpg";
-        if (mimeType) {
-          const mParts = mimeType.split("/");
-          if (mParts.length > 1) ext = mParts[1];
-        } else {
-          const match = base64Image.match(/^data:image\/([a-zA-Z0-9+.-]+);base64,/i);
-          if (match) ext = match[1];
-        }
-        
-        // Normalizar extensiones comunes
-        ext = ext.toLowerCase();
-        if (ext === "jpeg") ext = "jpg";
-        else if (ext === "svg+xml") ext = "svg";
-        
-        const dirPath = path.join(process.cwd(), "src", "Imagenes");
-        if (!fs.existsSync(dirPath)) {
-          fs.mkdirSync(dirPath, { recursive: true });
-        }
-        
-        const fileName = `scan-${Date.now()}.${ext}`;
-        const filePath = path.join(dirPath, fileName);
-        fs.writeFileSync(filePath, buffer);
-        console.log(`📸 Imagen de escaneo guardada exitosamente en: ${filePath}`);
-        
-        savedImagePath = `/src/Imagenes/${fileName}`;
+        savedImagePath = await withTimeout(
+          uploadScanImageToSupabase(base64Image, mimeType),
+          3500,
+          "La subida a Supabase Storage tardó demasiado."
+        );
+        console.log(`📸 Imagen de escaneo guardada exitosamente en Supabase Storage (${PLANT_IMAGES_BUCKET}): ${savedImagePath}`);
       } catch (err) {
-        console.error("Error al guardar la imagen en src/Imagenes:", err);
+        console.error(`Error al guardar la imagen en Supabase Storage (${PLANT_IMAGES_BUCKET}):`, err);
       }
     }
 
@@ -862,7 +909,7 @@ async function startServer() {
     }
 
     try {
-      const cleanBase64 = base64Image.replace(/^data:image\/\w+;base64,/, "");
+      const cleanBase64 = base64Image.replace(/^data:image\/[a-zA-Z0-9+.-]+;base64,/, "");
       const imgPart = {
         inlineData: {
           mimeType: mimeType || "image/jpeg",
@@ -921,7 +968,11 @@ async function startServer() {
         ],
       };
 
-      const response = await generateBotanicalContentWithRetry(client, imgPart, textPart, responseSchema);
+      const response = await withTimeout(
+        generateBotanicalContentWithRetry(client, imgPart, textPart, responseSchema),
+        8000,
+        "El análisis de Gemini tardó demasiado."
+      );
 
       if (response && response.text) {
         const parsedData = JSON.parse(response.text.trim());
