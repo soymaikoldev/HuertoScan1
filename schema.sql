@@ -51,15 +51,40 @@ ALTER TABLE public.ledger ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.store_metrics ENABLE ROW LEVEL SECURITY;
 
 -- 5. Create policies to allow all actions for anonymous users (for development)
+DROP POLICY IF EXISTS "Allow anonymous read crops" ON public.crops;
 CREATE POLICY "Allow anonymous read crops" ON public.crops FOR SELECT USING (true);
+DROP POLICY IF EXISTS "Allow anonymous insert crops" ON public.crops;
 CREATE POLICY "Allow anonymous insert crops" ON public.crops FOR INSERT WITH CHECK (true);
+DROP POLICY IF EXISTS "Allow anonymous update crops" ON public.crops;
 CREATE POLICY "Allow anonymous update crops" ON public.crops FOR UPDATE USING (true);
+DROP POLICY IF EXISTS "Allow anonymous delete crops" ON public.crops;
 CREATE POLICY "Allow anonymous delete crops" ON public.crops FOR DELETE USING (true);
 
+DROP POLICY IF EXISTS "Allow anonymous read ledger" ON public.ledger;
 CREATE POLICY "Allow anonymous read ledger" ON public.ledger FOR SELECT USING (true);
+DROP POLICY IF EXISTS "Allow anonymous insert ledger" ON public.ledger;
 CREATE POLICY "Allow anonymous insert ledger" ON public.ledger FOR INSERT WITH CHECK (true);
+DROP POLICY IF EXISTS "Allow anonymous delete ledger" ON public.ledger;
 CREATE POLICY "Allow anonymous delete ledger" ON public.ledger FOR DELETE USING (true);
 
+DROP POLICY IF EXISTS "Allow anonymous read metrics" ON public.store_metrics;
 CREATE POLICY "Allow anonymous read metrics" ON public.store_metrics FOR SELECT USING (true);
+DROP POLICY IF EXISTS "Allow anonymous insert metrics" ON public.store_metrics;
 CREATE POLICY "Allow anonymous insert metrics" ON public.store_metrics FOR INSERT WITH CHECK (true);
+DROP POLICY IF EXISTS "Allow anonymous update metrics" ON public.store_metrics;
 CREATE POLICY "Allow anonymous update metrics" ON public.store_metrics FOR UPDATE USING (true);
+
+-- 6. Storage Bucket setup for 'imagenes'
+-- Important: You must run this in the Supabase SQL Editor
+INSERT INTO storage.buckets (id, name, public) VALUES ('imagenes', 'imagenes', true) ON CONFLICT DO NOTHING;
+
+-- Storage RLS Policies
+DROP POLICY IF EXISTS "Allow public read imagenes" ON storage.objects;
+CREATE POLICY "Allow public read imagenes" ON storage.objects FOR SELECT USING (bucket_id = 'imagenes');
+DROP POLICY IF EXISTS "Allow public insert imagenes" ON storage.objects;
+CREATE POLICY "Allow public insert imagenes" ON storage.objects FOR INSERT WITH CHECK (bucket_id = 'imagenes');
+DROP POLICY IF EXISTS "Allow public update imagenes" ON storage.objects;
+CREATE POLICY "Allow public update imagenes" ON storage.objects FOR UPDATE USING (bucket_id = 'imagenes');
+DROP POLICY IF EXISTS "Allow public delete imagenes" ON storage.objects;
+CREATE POLICY "Allow public delete imagenes" ON storage.objects FOR DELETE USING (bucket_id = 'imagenes');
+

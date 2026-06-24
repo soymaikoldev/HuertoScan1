@@ -13,63 +13,6 @@ const rawSupabaseUrl = "https://klaompnbmjufvhjkeeno.supabase.co";
 const supabaseUrl = rawSupabaseUrl.replace(/\/rest\/v1\/?$/, '');
 const supabaseAnonKey = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImtsYW9tcG5ibWp1ZnZoamtlZW5vIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODE1NjY5ODEsImV4cCI6MjA5NzE0Mjk4MX0.udKgeFZLsVzXvSU0oqR0F3_J7EDCA1g7MxF00l8LEEc";
 const supabase = createClient(supabaseUrl, supabaseAnonKey);
-const SUPABASE_QUERY_TIMEOUT_MS = 3000;
-const PLANT_IMAGES_BUCKET = process.env.SUPABASE_STORAGE_BUCKET || "imagenes";
-
-const normalizeImageExtension = (mimeType?: string) => {
-  const rawExt = mimeType?.split("/")?.[1]?.toLowerCase() || "jpg";
-  if (rawExt === "jpeg") return "jpg";
-  if (rawExt === "svg+xml") return "svg";
-  return rawExt.replace(/[^a-z0-9]/g, "") || "jpg";
-};
-
-const uploadScanImageToSupabase = async (
-  base64Image: string,
-  mimeType?: string
-): Promise<string> => {
-  const parts = base64Image.split(";base64,");
-  const cleanBase = parts.length > 1 ? parts[1] : base64Image;
-  const buffer = Buffer.from(cleanBase, "base64");
-  const contentType = mimeType || base64Image.match(/^data:([^;]+);base64,/i)?.[1] || "image/jpeg";
-  const ext = normalizeImageExtension(contentType);
-  const objectPath = `scans/scan-${Date.now()}-${Math.random().toString(36).slice(2, 10)}.${ext}`;
-
-  const { error } = await supabase.storage
-    .from(PLANT_IMAGES_BUCKET)
-    .upload(objectPath, buffer, {
-      contentType,
-      upsert: false,
-    });
-
-  if (error) {
-    throw error;
-  }
-
-  const { data } = supabase.storage
-    .from(PLANT_IMAGES_BUCKET)
-    .getPublicUrl(objectPath);
-
-  return data.publicUrl;
-};
-
-const withTimeout = async <T>(
-  promise: Promise<T>,
-  timeoutMs: number,
-  errorMessage: string
-): Promise<T> => {
-  let timeout: NodeJS.Timeout | undefined;
-  const timeoutPromise = new Promise<never>((_, reject) => {
-    timeout = setTimeout(() => reject(new Error(errorMessage)), timeoutMs);
-  });
-
-  try {
-    return await Promise.race([promise, timeoutPromise]);
-  } finally {
-    if (timeout) {
-      clearTimeout(timeout);
-    }
-  }
-};
 
 // Initialize Gemini Client Lazily/Safely
 let aiClient: GoogleGenAI | null = null;
@@ -558,9 +501,10 @@ function saveVolume(volume: number) {
   }
 }
 
-let activeCrops: ServerCrop[] = loadCrops();
-let paymentLedger: ServerLedgerLog[] = loadLedger();
-let mockVolumenSalesUsd = loadVolume();
+// Removing local variables
+let activeCrops: ServerCrop[] = [];
+let paymentLedger: ServerLedgerLog[] = [];
+let mockVolumenSalesUsd = 0;
 
 export const app = express();
 
@@ -569,36 +513,17 @@ async function startServer() {
 
   app.use(express.json({ limit: "15mb" }));
   app.use(express.urlencoded({ extended: true, limit: "15mb" }));
-  app.use((err: any, _req: any, res: any, next: any) => {
-    if (!err) {
-      return next();
-    }
-
-    console.error("Error procesando el cuerpo de la petición:", err);
-    const status = err.type === "entity.too.large" ? 413 : 400;
-    return res.status(status).json({
-      success: false,
-      error: status === 413
-        ? "La imagen es demasiado grande para procesarla. Intenta con una foto más liviana."
-        : "No se pudo interpretar la petición de análisis.",
-    });
-  });
-  app.use("/src/Imagenes", express.static(path.join(process.cwd(), "src", "Imagenes")));
-  app.use("/src/imagenes", express.static(path.join(process.cwd(), "src", "imagenes")));
-
+  // Remove express.static for imagenes since we use Supabase now
+  
   // API Endpoints
   app.get("/api/crops", async (req, res) => {
     try {
-      const { data, error } = await withTimeout(
-        Promise.resolve(supabase.from('crops').select('*')),
-        SUPABASE_QUERY_TIMEOUT_MS,
-        'Timeout consultando cultivos en Supabase.'
-      );
+      const { data, error } = await supabase.from('crops').select('*');
       if (error) throw error;
       res.json(data || []);
     } catch (error: any) {
       console.error("Supabase /api/crops GET error:", error.message || error);
-      res.json(activeCrops);
+      res.status(500).json({ error: "Fallo al conectar con la base de datos (Supabase)." });
     }
   });
 
@@ -638,107 +563,67 @@ async function startServer() {
 
     try {
       // Check if exists
-      const { data: existing } = await withTimeout(
-        Promise.resolve(supabase.from('crops').select('id').eq('id', newCrop.id).maybeSingle()),
-        SUPABASE_QUERY_TIMEOUT_MS,
-        'Timeout verificando cultivo existente en Supabase.'
-      );
+      const { data: existing } = await supabase.from('crops').select('id').eq('id', newCrop.id).single();
       
       if (existing) {
         return res.json(newCrop);
       }
 
-      const { data, error } = await withTimeout(
-        Promise.resolve(supabase.from('crops').insert([newCrop]).select()),
-        SUPABASE_QUERY_TIMEOUT_MS,
-        'Timeout guardando cultivo en Supabase.'
-      );
+      const { data, error } = await supabase.from('crops').insert([newCrop]).select();
       if (error) throw error;
       
       res.status(201).json(data?.[0] || newCrop);
     } catch (error: any) {
        console.error("Supabase /api/crops POST error:", JSON.stringify(error, null, 2), error.message);
-       if (!activeCrops.find(c => c.id === newCrop.id)) {
-         activeCrops.push(newCrop);
-         saveCrops(activeCrops);
-       }
-       res.status(201).json(newCrop);
+       res.status(500).json({ error: "Error al guardar el cultivo en base de datos. Verifica RLS y tablas." });
     }
   });
 
   app.put("/api/crops/:id", async (req, res) => {
     const { id } = req.params;
     try {
-      const { data, error } = await withTimeout(
-        Promise.resolve(supabase.from('crops').update(req.body).eq('id', id).select()),
-        SUPABASE_QUERY_TIMEOUT_MS,
-        'Timeout actualizando cultivo en Supabase.'
-      );
+      const { data, error } = await supabase.from('crops').update(req.body).eq('id', id).select();
       
       if (error) throw error;
       
       if (data && data.length > 0) {
         res.json(data[0]);
       } else {
-        res.status(404).json({ error: "Cultivo no encontrado" });
+        res.status(404).json({ error: "Cultivo no encontrado en DB" });
       }
     } catch (error: any) {
       console.error("Supabase /api/crops PUT error:", error);
-      const idx = activeCrops.findIndex(c => c.id === id);
-      if (idx !== -1) {
-        activeCrops[idx] = { ...activeCrops[idx], ...req.body };
-        saveCrops(activeCrops);
-        res.json(activeCrops[idx]);
-      } else {
-        res.status(404).json({ error: "Cultivo no encontrado localmente" });
-      }
+      res.status(500).json({ error: "Error actualizando el cultivo en DB." });
     }
   });
 
   app.delete("/api/crops/:id", async (req, res) => {
     const { id } = req.params;
     try {
-      const { error } = await withTimeout(
-        Promise.resolve(supabase.from('crops').delete().eq('id', id)),
-        SUPABASE_QUERY_TIMEOUT_MS,
-        'Timeout eliminando cultivo en Supabase.'
-      );
+      const { error } = await supabase.from('crops').delete().eq('id', id);
       if (error) throw error;
       res.json({ success: true });
     } catch (error: any) {
       console.error("Supabase /api/crops DELETE error:", error);
-      activeCrops = activeCrops.filter(c => c.id !== id);
-      saveCrops(activeCrops);
-      res.json({ success: true });
+      res.status(500).json({ error: "Error borrando el cultivo en DB." });
     }
   });
 
   // Payment Ledger Endpoints
   app.get("/api/ledger", async (req, res) => {
     try {
-      const { data: ledgerData, error: ledgerError } = await withTimeout(
-        Promise.resolve(supabase.from('ledger').select('*').order('timestamp', { ascending: false })),
-        SUPABASE_QUERY_TIMEOUT_MS,
-        'Timeout consultando ledger en Supabase.'
-      );
+      const { data: ledgerData, error: ledgerError } = await supabase.from('ledger').select('*').order('timestamp', { ascending: false });
       if (ledgerError) throw ledgerError;
       
-      const { data: volumeData } = await withTimeout(
-        Promise.resolve(supabase.from('store_metrics').select('totalSalesUsd').eq('id', 'main').maybeSingle()),
-        SUPABASE_QUERY_TIMEOUT_MS,
-        'Timeout consultando métricas en Supabase.'
-      );
+      const { data: volumeData } = await supabase.from('store_metrics').select('totalSalesUsd').eq('id', 'main').single();
       
       res.json({
         ledger: ledgerData || [],
-        totalSalesUsd: volumeData?.totalSalesUsd || mockVolumenSalesUsd || 0,
+        totalSalesUsd: volumeData?.totalSalesUsd || 0,
       });
     } catch (error: any) {
       console.error("Supabase /api/ledger GET error:", error);
-      res.json({
-        ledger: paymentLedger,
-        totalSalesUsd: mockVolumenSalesUsd
-      });
+      res.status(500).json({ error: "Error obteniendo el ledger." });
     }
   });
 
@@ -762,71 +647,41 @@ async function startServer() {
     }
     
     try {
-      const { error } = await withTimeout(
-        Promise.resolve(supabase.from('ledger').insert([newLog as any])),
-        SUPABASE_QUERY_TIMEOUT_MS,
-        'Timeout guardando ledger en Supabase.'
-      );
+      const { error } = await supabase.from('ledger').insert([newLog as any]);
       if (error) throw error;
       
-      const newVol = Number((mockVolumenSalesUsd + usdValue).toFixed(2));
-      mockVolumenSalesUsd = newVol;
-      await withTimeout(
-        Promise.resolve(supabase.from('store_metrics').upsert([{ id: 'main', totalSalesUsd: newVol }])),
-        SUPABASE_QUERY_TIMEOUT_MS,
-        'Timeout actualizando métricas en Supabase.'
-      );
+      const { data: volumeData } = await supabase.from('store_metrics').select('totalSalesUsd').eq('id', 'main').single();
+      const currentVol = volumeData?.totalSalesUsd || 0;
+      const newVol = Number((currentVol + usdValue).toFixed(2));
+      
+      await supabase.from('store_metrics').upsert([{ id: 'main', totalSalesUsd: newVol }]);
       
       res.status(201).json({ log: newLog, totalSalesUsd: newVol });
     } catch (error: any) {
        console.error("Supabase /api/ledger POST error:", error);
-       
-       if (!paymentLedger.find(l => l.id === newLog.id)) {
-         paymentLedger.unshift(newLog as ServerLedgerLog);
-         saveLedger(paymentLedger);
-         
-         const newVol = Number((mockVolumenSalesUsd + usdValue).toFixed(2));
-         mockVolumenSalesUsd = newVol;
-         saveVolume(newVol);
-       }
-       
-       res.status(201).json({ log: newLog, totalSalesUsd: mockVolumenSalesUsd });
+       res.status(500).json({ error: "Error guardando el pago." });
     }
   });
 
   app.delete("/api/ledger", async (req, res) => {
     try {
-      await withTimeout(
-        Promise.resolve(supabase.from('ledger').delete().neq('id', 'clear_all')),
-        SUPABASE_QUERY_TIMEOUT_MS,
-        'Timeout limpiando ledger en Supabase.'
-      );
-      await withTimeout(
-        Promise.resolve(supabase.from('store_metrics').upsert([{ id: 'main', totalSalesUsd: 0 }])),
-        SUPABASE_QUERY_TIMEOUT_MS,
-        'Timeout reiniciando métricas en Supabase.'
-      );
-      mockVolumenSalesUsd = 0;
+      await supabase.from('ledger').delete().neq('id', 'clear_all');
+      await supabase.from('store_metrics').upsert([{ id: 'main', totalSalesUsd: 0 }]);
       
       res.json({ success: true, totalSalesUsd: 0.00 });
     } catch (error: any) {
       console.error("Supabase /api/ledger DELETE error:", error);
-      paymentLedger = [];
-      saveLedger(paymentLedger);
-      mockVolumenSalesUsd = 0;
-      saveVolume(0);
-      res.json({ success: true, totalSalesUsd: 0.00 });
+      res.status(500).json({ error: "Error borrando el ledger." });
     }
   });
 
   // Gemini Scan Helper with exponential retries and fallback model
   async function generateBotanicalContentWithRetry(client: any, imgPart: any, textPart: any, schema: any) {
-    const maxAttempts = 3;
+    const maxAttempts = 2; // Reduced to avoid vercel timeout
     let lastError: any = null;
 
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-      // Alternate models: Attempt 1 uses gemini-3.5-flash. If busy, try gemini-3.1-flash-lite immediately
-      const model = attempt === 1 ? "gemini-3.5-flash" : "gemini-3.1-flash-lite";
+      const model = attempt === 1 ? "gemini-2.5-flash" : "gemini-1.5-flash";
       console.log(`🤖 [Botanical Analysis] Attempt ${attempt}/${maxAttempts} using model: ${model}`);
       try {
         const response = await client.models.generateContent({
@@ -844,34 +699,59 @@ async function startServer() {
         throw new Error("Respuesta vacia");
       } catch (err: any) {
         lastError = err;
-        console.log(`[Botanical Analysis] Model ${model} returned status: API_BUSY_OR_UNAVAILABLE`);
-        // If we still have attempts, sleep with exponential backoff
+        console.log(`[Botanical Analysis] Model ${model} returned error:`, err?.message || err);
+        // If we still have attempts, sleep short to avoid vercel limits
         if (attempt < maxAttempts) {
-          const sleepMs = attempt * 1500;
-          console.log(`[Botanical Analysis] Sleeping ${sleepMs}ms before next model attempt...`);
-          await new Promise((resolve) => setTimeout(resolve, sleepMs));
+          await new Promise((resolve) => setTimeout(resolve, 500));
         }
       }
     }
-    throw lastError || new Error("Se rebasaron todos los reintentos");
+    console.error("Gemini failed after retries:", lastError);
+    return null;
   }
 
   // Scan Plant Endpoint
   app.post("/api/scan-plant", async (req, res) => {
-    const { base64Image, mimeType, isPresetSeed, presetIndex, targetElement } = req.body || {};
+    const { base64Image, mimeType, isPresetSeed, presetIndex, targetElement } = req.body;
 
-    // Guardar imagen en el bucket publico de Supabase Storage si se provee.
+    // Guardar imagen en Supabase Storage de inmediato si se provee
     let savedImagePath = "";
-    if (base64Image && /^data:image\/[a-zA-Z0-9+.-]+;base64,/.test(base64Image)) {
+    if (base64Image && /^data:image\/\w+;base64,/.test(base64Image)) {
       try {
-        savedImagePath = await withTimeout(
-          uploadScanImageToSupabase(base64Image, mimeType),
-          3500,
-          "La subida a Supabase Storage tardó demasiado."
-        );
-        console.log(`📸 Imagen de escaneo guardada exitosamente en Supabase Storage (${PLANT_IMAGES_BUCKET}): ${savedImagePath}`);
+        const parts = base64Image.split(";base64,");
+        const cleanBase = parts.length > 1 ? parts[1] : base64Image;
+        const buffer = Buffer.from(cleanBase, "base64");
+        
+        let ext = "jpg";
+        if (mimeType) {
+          const mParts = mimeType.split("/");
+          if (mParts.length > 1) ext = mParts[1];
+        } else {
+          const match = base64Image.match(/^data:image\/([a-zA-Z0-9+.-]+);base64,/i);
+          if (match) ext = match[1];
+        }
+        
+        // Normalizar extensiones comunes
+        ext = ext.toLowerCase();
+        if (ext === "jpeg") ext = "jpg";
+        else if (ext === "svg+xml") ext = "svg";
+        
+        const fileName = `scan-${Date.now()}.${ext}`;
+        
+        // Subir a Supabase Storage: bucket 'imagenes'
+        const { data, error } = await supabase.storage.from("imagenes").upload(fileName, buffer, {
+          contentType: mimeType || `image/${ext}`
+        });
+
+        if (error) {
+          console.error("Error al subir imagen a Supabase:", error);
+        } else {
+          const { data: publicUrlData } = supabase.storage.from("imagenes").getPublicUrl(fileName);
+          savedImagePath = publicUrlData.publicUrl;
+          console.log(`📸 Imagen de escaneo guardada exitosamente en Supabase: ${savedImagePath}`);
+        }
       } catch (err) {
-        console.error(`Error al guardar la imagen en Supabase Storage (${PLANT_IMAGES_BUCKET}):`, err);
+        console.error("Error procesando o subiendo la imagen:", err);
       }
     }
 
@@ -950,7 +830,7 @@ async function startServer() {
     }
 
     try {
-      const cleanBase64 = base64Image.replace(/^data:image\/[a-zA-Z0-9+.-]+;base64,/, "");
+      const cleanBase64 = base64Image.replace(/^data:image\/\w+;base64,/, "");
       const imgPart = {
         inlineData: {
           mimeType: mimeType || "image/jpeg",
@@ -1009,11 +889,7 @@ async function startServer() {
         ],
       };
 
-      const response = await withTimeout(
-        generateBotanicalContentWithRetry(client, imgPart, textPart, responseSchema),
-        8000,
-        "El análisis de Gemini tardó demasiado."
-      );
+      const response = await generateBotanicalContentWithRetry(client, imgPart, textPart, responseSchema);
 
       if (response && response.text) {
         const parsedData = JSON.parse(response.text.trim());

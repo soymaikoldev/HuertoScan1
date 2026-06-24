@@ -52,9 +52,6 @@ export const PlantScanner: React.FC<PlantScannerProps> = ({ onCropIdentified }) 
         }),
       });
       const resultData = await res.json();
-      if (!res.ok) {
-        throw new Error(resultData.error || `Error HTTP ${res.status} analizando la imagen`);
-      }
 
       if (resultData.success && resultData.data) {
         const cropRes: Crop = {
@@ -98,14 +95,14 @@ export const PlantScanner: React.FC<PlantScannerProps> = ({ onCropIdentified }) 
     }
   };
 
-  const resizeImageBase64 = (base64Str: string): Promise<string> => {
-    return new Promise((resolve, reject) => {
+  const resizeImageBase64 = (base64Str: string, mimeType: string = "image/jpeg"): Promise<string> => {
+    return new Promise((resolve) => {
       const img = new Image();
       img.src = base64Str;
       img.onload = () => {
         const canvas = document.createElement("canvas");
-        const maxWidth = 256;
-        const maxHeight = 256;
+        const maxWidth = 320;
+        const maxHeight = 320;
         let width = img.width;
         let height = img.height;
 
@@ -126,13 +123,13 @@ export const PlantScanner: React.FC<PlantScannerProps> = ({ onCropIdentified }) 
         const ctx = canvas.getContext("2d");
         if (ctx) {
           ctx.drawImage(img, 0, 0, width, height);
-          resolve(canvas.toDataURL("image/jpeg", 0.68));
+          resolve(canvas.toDataURL(mimeType, 0.75));
         } else {
-          reject(new Error("No se pudo preparar la imagen para el análisis."));
+          resolve(base64Str);
         }
       };
       img.onerror = () => {
-        reject(new Error("Formato de imagen no soportado por el navegador."));
+        resolve(base64Str);
       };
     });
   };
@@ -147,17 +144,13 @@ export const PlantScanner: React.FC<PlantScannerProps> = ({ onCropIdentified }) 
     const reader = new FileReader();
     reader.onload = async () => {
       const parentBase64 = reader.result as string;
-      try {
-        const compressedBase64 = await resizeImageBase64(parentBase64);
-        triggerScanApi({
-          base64Image: compressedBase64,
-          mimeType: "image/jpeg",
-          isPresetSeed: false,
-        });
-      } catch (err: any) {
-        console.error(err);
-        alert(err.message || "No se pudo preparar la imagen para el análisis.");
-      }
+      const targetMimeType = file.type || "image/jpeg";
+      const compressedBase64 = await resizeImageBase64(parentBase64, targetMimeType);
+      triggerScanApi({
+        base64Image: compressedBase64,
+        mimeType: targetMimeType,
+        isPresetSeed: false,
+      });
     };
     reader.readAsDataURL(file);
   };
